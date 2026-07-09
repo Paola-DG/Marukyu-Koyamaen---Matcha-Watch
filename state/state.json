@@ -1,14 +1,16 @@
 {
   "_session": {
-    "closed_on": "2026-07-09",
+    "closed_on": null,
     "opened_on": null
   },
   "isuzu": {
-    "available": true,
-    "last_checked_utc": "2026-07-09T08:28:59Z"
+    "available": false,
+    "last_checked_utc": null,
+    "pending_confirmations": 0
   },
   "wako": {
-    "available": true,
-    "last_checked_utc": "2026-07-09T08:28:58Z"
+    "available": false,
+    "last_checked_utc": null,
+    "pending_confirmations": 0
   }
 }
