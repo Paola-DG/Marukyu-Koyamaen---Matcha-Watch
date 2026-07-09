@@ -12,6 +12,12 @@ Designed to run as a GitHub Action (cron every 2 min, Mon-Fri 9:00-17:30 JST).
 State is kept in a JSON file committed back to the repo so notifications only
 fire on state transitions (out of stock -> available) and once per day for
 the open/close messages.
+
+Availability detection uses a positive-evidence approach with a
+require-two-consecutive-checks confirmation step, specifically to avoid
+false positives caused by anti-bot pages, CAPTCHAs, error pages, or partial
+page loads that happen to omit the "out of stock" text without actually
+being a real in-stock page.
 """
 
 import json
@@ -37,8 +43,6 @@ PRODUCTS = {
         "url": "https://www.marukyu-koyamaen.co.jp/english/shop/products/1191040c1",
     },
 }
-
-OUT_OF_STOCK_MARKER = "currently out of stock and unavailable"
 
 STATE_FILE = Path(__file__).resolve().parent.parent / "state" / "state.json"
 
@@ -71,6 +75,11 @@ JST = ZoneInfo("Asia/Tokyo")
 WINDOW_START = (9, 0)     # 9:00 AM JST
 WINDOW_END = (17, 30)     # 5:30 PM JST
 CHECK_INTERVAL_MINUTES = 2
+
+# Number of consecutive "available" reads required before we trust it enough
+# to notify. This protects against a single anomalous/anti-bot response
+# being misread as a real restock.
+CONFIRMATIONS_REQUIRED = 2
 
 
 # --------------------------------------------------------------------------
@@ -140,13 +149,65 @@ def fetch_page(url: str) -> str | None:
     return None
 
 
+OUT_OF_STOCK_MARKER = "currently out of stock and unavailable"
+
+# Text that should ALWAYS be present on a genuine, fully-loaded product page.
+# If any of these are missing, the page is anomalous (error page, CAPTCHA,
+# bot-block page, partial load, redirect, etc.) and must NOT be trusted for
+# a stock decision either way.
+PAGE_SANITY_MARKERS = [
+    "Matcha",           # category name, present in nav/breadcrumbs/footer
+    "add-to-cart",      # standard WooCommerce cart form class/id fragment
+]
+
+# Positive signal that a purchasable option genuinely exists on the page.
+# WooCommerce (used by this shop) renders an actual add-to-cart button/form
+# for in-stock items; an out-of-stock item either omits it or disables it.
+IN_STOCK_POSITIVE_MARKERS = [
+    "add_to_cart_button",
+    "single_add_to_cart_button",
+]
+
+MIN_VALID_PAGE_LENGTH = 5000
+
+
+def looks_like_valid_product_page(html: str) -> bool:
+    """
+    Defensive check: confirms the page is a normal, fully-rendered product
+    page rather than an error/CAPTCHA/bot-block/placeholder page. Anti-bot
+    systems, transient errors, or partial loads can return HTML that simply
+    lacks the "out of stock" text WITHOUT actually being a real in-stock
+    page -- that's a false positive waiting to happen, so we refuse to trust
+    any page that doesn't look like the real thing.
+    """
+    if len(html) < MIN_VALID_PAGE_LENGTH:
+        # Real product pages are large; a short response is almost always
+        # an error page, redirect stub, or CAPTCHA challenge.
+        return False
+    return all(marker in html for marker in PAGE_SANITY_MARKERS)
+
+
 def is_available(html: str) -> bool:
     """
-    The out-of-stock marker is a fixed text string on the product page.
-    If it's NOT present, we assume at least one size/variant is available
-    (policy: notify if ANY size is in stock).
+    Determines availability using a positive-evidence approach rather than
+    only the absence of the out-of-stock marker:
+
+    1. The page must look like a genuine, fully-loaded product page
+       (see looks_like_valid_product_page). If not, we cannot trust this
+       result at all -> treated as NOT available (fail safe, never notify
+       on an untrustworthy page).
+    2. The out-of-stock marker must be absent.
+    3. AND a real add-to-cart button must be present.
+
+    Policy: notify if ANY size/variant is purchasable.
     """
-    return OUT_OF_STOCK_MARKER not in html
+    if not looks_like_valid_product_page(html):
+        return False
+
+    if OUT_OF_STOCK_MARKER in html:
+        return False
+
+    return any(marker in html for marker in IN_STOCK_POSITIVE_MARKERS)
 
 
 # --------------------------------------------------------------------------
@@ -226,23 +287,47 @@ def main() -> int:
     # --- Stock checks ---
     for key, product in PRODUCTS.items():
         html = fetch_page(product["url"])
+        product_state = state.get(key, {})
+
         if html is None:
-            # Could not check this product this run; leave its state untouched.
+            # Could not fetch this product this run; leave its state untouched,
+            # but reset the confirmation streak since we have no fresh reading.
+            product_state["pending_confirmations"] = 0
+            state[key] = product_state
             exit_code = 1
             continue
 
         available_now = is_available(html)
-        was_available = state.get(key, {}).get("available", False)
+        was_available = product_state.get("available", False)
+        pending = product_state.get("pending_confirmations", 0)
 
-        print(f"[info] {product['name']}: available={available_now} (previous={was_available})")
+        if available_now:
+            pending += 1
+        else:
+            pending = 0
 
-        # Notify only on the out-of-stock -> available transition (avoids spam)
-        if available_now and not was_available:
+        confirmed_available = available_now and pending >= CONFIRMATIONS_REQUIRED
+
+        print(
+            f"[info] {product['name']}: raw_available={available_now} "
+            f"pending_confirmations={pending}/{CONFIRMATIONS_REQUIRED} "
+            f"previous_confirmed={was_available}"
+        )
+
+        # Notify only on the confirmed out-of-stock -> available transition
+        # (avoids spam AND avoids single-read false positives)
+        if confirmed_available and not was_available:
             if not send_telegram_message(build_stock_notification(product)):
                 exit_code = 1
 
+        # "available" reflects our current confirmed belief:
+        # - stays True while raw readings keep coming back positive
+        # - flips to False the moment a raw reading is negative
+        # - only flips True once CONFIRMATIONS_REQUIRED positive reads in a row
+        still_available = was_available and available_now
         state[key] = {
-            "available": available_now,
+            "available": confirmed_available or still_available,
+            "pending_confirmations": pending,
             "last_checked_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
