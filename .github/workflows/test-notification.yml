@@ -1,0 +1,21 @@
+name: Test Telegram Notification
+
+# Manual workflow to verify TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are
+# configured correctly, without waiting for the cron or the JST window.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-notification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send test message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d text="✅ matcha-watch: Telegram configuration is working correctly." \
+            -d parse_mode="HTML"

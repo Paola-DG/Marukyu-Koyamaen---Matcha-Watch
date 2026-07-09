@@ -1,0 +1,50 @@
+name: Matcha Stock Check
+
+# JST has no daylight saving time (always UTC+9), so the UTC window is fixed:
+# Mon-Fri 09:00-17:30 JST == Sun(night)-Thu(night) 00:00-08:30 UTC.
+on:
+  schedule:
+    # Runs every 2 minutes, 00:00 to 08:58 UTC, Sunday to Thursday (UTC)
+    # => Monday to Friday 09:00-17:58 JST
+    - cron: "*/2 0-8 * * 0-4"
+  workflow_dispatch: {}   # allows manual trigger from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: matcha-watch-check
+  cancel-in-progress: false
+
+jobs:
+  check-stock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run stock check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python src/watch.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "matcha-watch-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add state/state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update stock state [skip ci]"
+            git push
+          else
+            echo "No state changes, nothing to commit."
+          fi
