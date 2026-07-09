@@ -41,10 +41,23 @@ Runs entirely on **GitHub Actions** — no need to keep your own machine or serv
                                                   └─────────────────────┘
 ```
 
-- **Stock detection:** each product page shows the text *"This product is
-  currently out of stock and unavailable."* when it's sold out in every
-  size. If that text is **not** present, the product is considered available
-  (policy: notify if **any** size/variant is in stock).
+- **Stock detection (defensive, multi-layer):** each product page shows the
+  text *"This product is currently out of stock and unavailable."* when it's
+  sold out in every size. However, relying only on that text being *absent*
+  is fragile — anti-bot pages, CAPTCHAs, error pages, or partial loads can
+  all omit that phrase without actually being a real in-stock page. To avoid
+  false positives, a page is only considered available when **all** of the
+  following are true:
+  1. The page looks like a genuine, fully-rendered product page (large
+     enough, contains expected structural markers).
+  2. The "out of stock" text is absent.
+  3. A real, rendered "add to cart" button is present (positive evidence,
+     not just absence of the negative marker).
+  4. This positive result repeats on **two consecutive checks** (4 minutes
+     apart) before a notification is sent — a single anomalous read is
+     never enough to trigger an alert.
+
+  Policy: notify if **any** size/variant is confirmed in stock.
 - **Anti-spam:** the state (`available` / `out of stock`) of each product is
   stored in [`state/state.json`](state/state.json), which the workflow commits
   back to the repo. A notification only fires on the **transition** from
@@ -145,6 +158,12 @@ python tests/test_availability.py
 
 ## ⚠️ Known notes and limitations
 
+- **False positives (fixed):** an earlier version of this bot only checked
+  for the *absence* of the "out of stock" text, which could misfire if the
+  site returned an anomalous page (anti-bot block, error page, etc.) during
+  a burst of traffic near the window's open/close times. The detector now
+  requires positive evidence (a real add-to-cart button) plus **two
+  consecutive confirmations** before notifying, specifically to prevent this.
 - **Site anti-bot measures:** Marukyu Koyamaen has publicly stated it detects
   and blocks third-party bots during restocks. This project makes spaced-out
   requests (every 2 min) with standard browser headers to minimize the risk
