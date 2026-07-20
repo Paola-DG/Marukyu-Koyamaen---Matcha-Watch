@@ -5,12 +5,12 @@
   },
   "isuzu": {
     "available": false,
-    "last_checked_utc": "2026-07-16T07:33:32Z",
+    "last_checked_utc": "2026-07-20T03:10:15Z",
     "pending_confirmations": 0
   },
   "wako": {
     "available": false,
-    "last_checked_utc": "2026-07-16T07:33:32Z",
+    "last_checked_utc": "2026-07-20T03:10:15Z",
     "pending_confirmations": 0
   }
 }
